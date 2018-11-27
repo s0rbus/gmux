@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	gmux "github.com/davinche/gmux/cli"
@@ -76,5 +77,7 @@ func main() {
 		}
 		return gmux.ShowHelp(c)
 	}
-	app.Run(os.Args)
+	if err := app.Run(os.Args); err != nil {
+		os.Stderr.WriteString(fmt.Sprintf("%s\n",err.Error()))
+	}	
 }
