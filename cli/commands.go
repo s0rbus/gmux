@@ -66,7 +66,8 @@ func Start(c *cli.Context) error {
 	}
 
 	if err := config.GetAndRun(configName, c.GlobalBool("debug")); err != nil {
-		return cli.NewExitError(err, 1)
+		return cli.NewExitError(fmt.Sprintf("error from GetAndRun: %v", err.Error()), 1)
+		//return cli.NewExitError(err, 1)
 	}
 	return nil
 }

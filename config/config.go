@@ -9,12 +9,15 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"encoding/json"
 
 	"github.com/davinche/gmux/command"
+	"github.com/nu7hatch/gouuid"
 )
 
 // User's Home Directory
@@ -110,12 +113,88 @@ func (c *Config) Exec(debug bool) error {
 	if c.Windows[0].Root != "" {
 		firstWindowRoot = expandPath(c.Windows[0].Root)
 	}
-	cc.Add("tmux", "start-server")
-	cc.Add("tmux", "new-session", "-d", "-s", c.Name, "-n", c.Windows[0].Name, "-c", firstWindowRoot)
+	//not sure we need this anymore? new-session will start a server
+	//cc.Add("tmux", "start-server")
+	cc.Add("tmux", "-v", "new-session", "-d", "-s", c.Name, "-n", c.Windows[0].Name, "-c", firstWindowRoot)
+
+	/*
+			  check base-index and base-panes-index as cannot assume index starts at 0
+			  we need an active tmux session to check options so first create a temp tmux session
+		     just in case no other sessions are available, since this method will not yet have created
+		     a session, but we need to know NOW about index options to correctly set up the windows
+	*/
+	tempSessionID, err := createTempSession(debug)
+	if err != nil {
+		if debug {
+			log.Printf("error: could not create temp session: %v\n", err.Error())
+		}
+		return err
+	}
+
+	cmd := "tmux show-options -g | grep base-index"
+	output, err := exec.Command("bash", "-c", cmd).Output()
+	if err != nil {
+		if debug {
+			log.Println("error: could not determine base index")
+		}
+		return err
+	}
+	ostr := strings.TrimSpace(string(output))
+	re := regexp.MustCompile("[0-9]$")
+	res := re.FindAllString(ostr, -1)
+	if res == nil {
+		if debug {
+			log.Printf("error: could not parse base index option %s\n", ostr)
+		}
+		return fmt.Errorf("could not parse base index option [%s]\n", ostr)
+	}
+	idxBase, err := strconv.Atoi(res[0])
+	if err != nil {
+		if debug {
+			log.Println("error: base index option not an integer")
+		}
+		return err
+	}
+
+	cmd = "tmux show-window-options -g | grep base-index"
+	output, err = exec.Command("bash", "-c", cmd).Output()
+	if err != nil {
+		if debug {
+			log.Println("error: could not determine pane base index")
+		}
+		return err
+	}
+	ostr = strings.TrimSpace(string(output))
+	res = re.FindAllString(ostr, -1)
+	if res == nil {
+		if debug {
+			log.Println("error: could not parse pane base index option")
+		}
+		return fmt.Errorf("could not parse pane base index option")
+	}
+	idxPaneBase, err := strconv.Atoi(res[0])
+	if err != nil {
+		if debug {
+			log.Println("error: base index option not an integer")
+		}
+		return err
+	}
+
+	err = killTempSession(debug, tempSessionID)
+	if err != nil {
+		if debug {
+			log.Printf("error: could not kill temporary session: %s\n", err.Error())
+		}
+		return err
+	}
+
+	if debug {
+		log.Printf("debug: win, pane idx: %v, %v\n", idxBase, idxPaneBase)
+	}
 
 	// Create the windows
 	for idx, w := range c.Windows {
-		winID := fmt.Sprintf("%s:%d", c.Name, idx)
+		winID := fmt.Sprintf("%s:%d", c.Name, idx+idxBase)
 		wRoot := rootAbs
 		if w.Root != "" {
 			wRoot = expandPath(w.Root)
@@ -130,7 +209,7 @@ func (c *Config) Exec(debug bool) error {
 
 		// Create Panes
 		for idx, p := range w.Panes {
-			paneID := fmt.Sprintf("%s.%d", winID, idx)
+			paneID := fmt.Sprintf("%s.%d", winID, idx+idxPaneBase)
 
 			// Likewise, first pane is created automatically
 			// so only "split window" for subsequent panes
@@ -158,15 +237,18 @@ func (c *Config) Exec(debug bool) error {
 	}
 
 	// Select Starting Window
-	selectWindow := fmt.Sprintf("%s:0", c.Name)
+	selectWindow := fmt.Sprintf("%s:%v", c.Name, idxBase)
 	if c.StartupWindow != "" {
 		selectWindow = fmt.Sprintf("%s:%s", c.Name, c.StartupWindow)
 	}
 	cc.Add("tmux", "select-window", "-t", selectWindow)
-	cc.Add("tmux", "select-pane", "-t", fmt.Sprintf("%s.%d", selectWindow, c.StartupPane))
+	cc.Add("tmux", "select-pane", "-t", fmt.Sprintf("%s.%d", selectWindow, c.StartupPane+idxPaneBase))
 
 	// Run our tmux script
 	if err := cc.Run(); err != nil {
+		if debug {
+			log.Printf("error: running commands: %v\n", err.Error())
+		}
 		return err
 	}
 
@@ -354,4 +436,34 @@ func getConfigFilePath(configName string) string {
 
 func escapePath(path string) string {
 	return strings.Replace(path, " ", "\\ ", -1)
+}
+
+//create a temporary tmux sesssion
+func createTempSession(debug bool) (string, error) {
+	uuid, err := uuid.NewV4()
+	if err != nil {
+		return "", err
+	}
+
+	cmd := fmt.Sprintf("tmux new-session -d -s %s", uuid.String())
+	_, err = exec.Command("bash", "-c", cmd).Output()
+	if err != nil {
+		if debug {
+			log.Println("error: could not create temp tmux session")
+		}
+		return "", err
+	}
+	return uuid.String(), nil
+}
+
+func killTempSession(debug bool, ts string) error {
+	cmd := fmt.Sprintf("tmux kill-session -t %s", ts)
+	_, err := exec.Command("bash", "-c", cmd).Output()
+	if err != nil {
+		if debug {
+			log.Printf("error: could not kill temp tmux session: %s", ts)
+		}
+		return err
+	}
+	return nil
 }

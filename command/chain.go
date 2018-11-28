@@ -30,6 +30,9 @@ func (c *Chain) Run() error {
 			cmd = exec.Command(command[0], command[1:]...)
 		}
 		if err := cmd.Run(); err != nil {
+			if c.Debug {
+				log.Printf("got an error running command %s: %s", strings.Join(command, " "), err.Error())
+			}
 			return err
 		}
 	}
